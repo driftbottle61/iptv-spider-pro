@@ -1,0 +1,61 @@
+# install-dhcp.sh answers（shell KEY=value 格式）
+# 复制为 install-dhcp.conf 后填写；含 IPTV 账号凭据，请勿提交到 Git。
+
+# ---- 应用 ----
+APP_DIR=/opt/sh-iptv-spider
+PORT=8888
+LAN_IP=192.168.100.92            # 本机管理网 IP（用于 xml_url 等；eth0 由 PVE net0 配置）
+
+# ---- CT root SSH（可选，由 pve-iptv-dhcp-create.sh 创建容器时应用）----
+# 留空=不设置密码，SSH 仅公钥登录；设置后允许 SSH root 密码登录
+ROOT_PASSWORD=
+
+# ---- 专网接口 ----
+ETH1_IF=eth1
+# 可选：续用原租约 IP。必须是 --eth1-mac 对应 DUID 的转义内容，如：
+# DHCP_DUID='\000\001\000\00122\271E\274$\021\207\2672'
+DHCP_DUID=
+
+# ---- 机顶盒/账号认证参数获取方式 ----
+#   STB_MODE=manual   —— 手工填写下面的 STB_*（老方式）
+#   STB_MODE=capture  —— 全新安装经 RouterOS 抓包自动获取（除专网 IP 由 eth1
+#                        DHCP 租约提供外，UID/MAC/SN/type/plane_* 都从实体
+#                        机顶盒启动流量中抓取并填入 config.yaml，无需手填）
+STB_MODE=manual
+STB_UID=                      # STB_MODE=manual 时必需
+STB_MAC=                      # STB_MODE=manual 时必需
+STB_SN=                       # STB_MODE=manual 时必需
+STB_TYPE=B860A
+STB_AUTH_HOST=222.68.208.73:7001
+STB_PLANE_A_IP=
+STB_PLANE_B_GATEWAY=
+
+# ---- STB_MODE=capture 的 RouterOS 抓包连接参数 ----
+# 交互向导（pve-iptv-dhcp-create.sh 无参数运行）会自动询问并写入 ROUTER_PRESET=1；
+# 直接手写 answers 时建议带上这些键，否则容器内安装时会交互询问。
+# ROUTER_PRESET=1             # 1=上面连接参数已齐全，容器内不再逐项询问
+# ROUTER_HOST=192.168.100.1
+# ROUTER_PORT=1314
+# ROUTER_USER=david_ni
+# ROUTER_AUTH=key             # key=SSH 私钥（推荐）；password=用户名密码
+# ROUTER_KEY=/root/.ssh/id_ed25519_routeros   # ROUTER_AUTH=key 时容器内私钥路径
+# ROUTER_PASSWORD=            # ROUTER_AUTH=password 时的密码
+# ROUTER_IFACE=ether3_lan     # RouterOS 上连接实体机顶盒的物理端口
+# CAPTURE_SECONDS=120         # 抓包时长（秒），期间需重启一次实体机顶盒
+
+# ---- 直播与回放 ----
+SOURCE_M3U=
+UDPXY=192.168.100.51:4022
+CATCHUP_DAYS=7
+RELAY_CLIENTS=
+
+# ---- 数据库（仅支持本机 127.0.0.1 时自动建库建用户）----
+MYSQL_HOST=127.0.0.1
+MYSQL_DB=iptv
+MYSQL_USER=iptv
+MYSQL_PASSWORD=
+
+# ---- 发行包来源：auto=脚本同目录有完整发行包则用本地，否则 GitHub ----
+INSTALL_SOURCE=auto
+VERSION=1.0.0
+REPOSITORY=driftbottle61/iptv-spider-pro
