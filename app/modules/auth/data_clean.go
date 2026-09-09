@@ -9,7 +9,7 @@ import (
 
 // CleanEPGDetailsData 节目单数据清理
 func CleanEPGDetailsData() {
-	// 如果节目单的结束时间大于48小时，则硬删除该数据
+	// 早于 8 天前结束的节目单硬删除（保留 7 天回看窗口 + 余量，与抓取时的保留策略一致）
 	t := carbon.Now().SubDays(8).TimestampMilli()
 	r := global.DB.Unscoped().Where("end_time < ?", t).Delete(&model.EPGDetails{})
 	log := fmt.Sprintf("清理 EPGDetails;\t条件 end_time < %d", t)

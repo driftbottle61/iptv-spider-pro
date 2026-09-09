@@ -6,8 +6,8 @@ type Server struct {
 	System  System  `mapstructure:"system" json:"system" yaml:"system"`
 	Cache   Cache   `mapstructure:"cache" json:"cache" yaml:"cache"`
 	Mysql   Mysql   `mapstructure:"mysql" json:"mysql" yaml:"mysql"`
-	Stb     Stb     `apstructure:"stb" json:"stb" yaml:"stb"`
-	Epg     Epg     `apstructure:"epg" json:"epg" yaml:"epg"`
+	Stb     Stb     `mapstructure:"stb" json:"stb" yaml:"stb"`
+	Epg     Epg     `mapstructure:"epg" json:"epg" yaml:"epg"`
 	Catchup Catchup `mapstructure:"catchup" json:"catchup" yaml:"catchup"`
 	OSS     OSS     `mapstructure:"oss" json:"oss" yaml:"oss"`
 }

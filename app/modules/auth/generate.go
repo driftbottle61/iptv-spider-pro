@@ -23,6 +23,23 @@ const directReferenceM3uPath = "assets/channel-reference.m3u"
 
 const localLogoPath = "/iptvlogos/"
 
+// 批量预载频道与分组映射（替代逐频道 N+1 查询）
+func preloadChannelMaps() (map[string]model.Channel, map[string]model.M3u8Mapping) {
+	var channels []model.Channel
+	global.DB.Find(&channels)
+	channelByMix := make(map[string]model.Channel, len(channels))
+	for _, c := range channels {
+		channelByMix[c.UserChannelID] = c
+	}
+	var mappings []model.M3u8Mapping
+	global.DB.Find(&mappings)
+	mappingByComm := make(map[string]model.M3u8Mapping, len(mappings))
+	for _, m := range mappings {
+		mappingByComm[m.CommName] = m
+	}
+	return channelByMix, mappingByComm
+}
+
 func GenerateM3u8(udpxy, scheme, xteve, all string) []byte {
 	m3uWriter := m3u.NewWriter()
 	m3uWriter.WriteHeaderWithInfo(global.CONFIG.Epg.XmlUrl)
@@ -33,18 +50,14 @@ func GenerateM3u8(udpxy, scheme, xteve, all string) []byte {
 		Find(&channelInfoList)
 	// 去重
 	newChanInfo := model.RemoveDuplicateChannelInfo(channelInfoList)
+	channelByMix, mappingByComm := preloadChannelMaps()
 	for _, info := range newChanInfo {
 		// 不展示
 		if !info.IsShow {
 			continue
 		}
-		channel := model.Channel{}
-		global.DB.Where("user_channel_id = ?", info.MixNo).
-			Find(&channel)
-
-		m3u8Mapping := model.M3u8Mapping{}
-		global.DB.Where("comm_name = ?", info.CommName).
-			Find(&m3u8Mapping)
+		channel := channelByMix[info.MixNo]
+		m3u8Mapping := mappingByComm[info.CommName]
 
 		if all != "true" && (m3u8Mapping.AutoGroups == "购物" ||
 			m3u8Mapping.CustomGroups == "购物") {
@@ -70,14 +83,13 @@ func generateDirectCatchupM3u8(udpxy, epgURL, catchupBase string, days int, star
 	referenceMappings := fetchDirectReferenceMappings()
 	var channelInfoList []model.ChannelInfo
 	global.DB.Order("mix_no asc").Find(&channelInfoList)
+	channelByMix, mappingByComm := preloadChannelMaps()
 	for _, info := range model.RemoveDuplicateChannelInfo(channelInfoList) {
 		if !info.IsShow {
 			continue
 		}
-		var channel model.Channel
-		global.DB.Where("user_channel_id = ?", info.MixNo).First(&channel)
-		mapping := model.M3u8Mapping{}
-		global.DB.Where("comm_name = ?", info.CommName).Find(&mapping)
+		channel := channelByMix[info.MixNo]
+		mapping := mappingByComm[info.CommName]
 		if reference, ok := referenceMappings[info.MixNo]; ok {
 			mapping.Logo = localLogoURL(reference.Logo)
 			mapping.CustomGroups = reference.Group
@@ -169,18 +181,14 @@ func GenerateTimeShiftM3u8() []byte {
 	global.DB.Find(&channelInfoList)
 	// 去重
 	newChanInfo := model.RemoveDuplicateChannelInfo(channelInfoList)
+	channelByMix, mappingByComm := preloadChannelMaps()
 	for _, info := range newChanInfo {
 		// 不展示
 		if !info.IsShow {
 			continue
 		}
-		channel := model.Channel{}
-		global.DB.Where("user_channel_id = ?", info.MixNo).
-			Find(&channel)
-
-		m3u8Mapping := model.M3u8Mapping{}
-		global.DB.Where("comm_name = ?", info.CommName).
-			Find(&m3u8Mapping)
+		channel := channelByMix[info.MixNo]
+		m3u8Mapping := mappingByComm[info.CommName]
 
 		if m3u8Mapping.AutoGroups == "购物" || m3u8Mapping.CustomGroups == "购物" {
 			continue
@@ -220,6 +228,25 @@ func GenerateXmlTv(daysAgo int) ([]byte, error) {
 	global.DB.Find(&channelInfoList)
 	// 去重
 	newChanInfo := model.RemoveDuplicateChannelInfo(channelInfoList)
+	// 一次性批量取全部频道的节目（替代逐频道 N+1 查询），按 comm_name 分组保持原输出顺序
+	boundary := epgHistoryBoundary(time.Now(), daysAgo)
+	pullNames := make([]string, 0, len(newChanInfo))
+	for _, info := range newChanInfo {
+		if info.IsShow && info.IsPullEPG {
+			pullNames = append(pullNames, info.CommName)
+		}
+	}
+	epgByComm := make(map[string][]model.EPGDetails)
+	if len(pullNames) > 0 {
+		var epgAll []model.EPGDetails
+		global.DB.Where("comm_name IN ?", pullNames).
+			Where("start_time >= ?", boundary).
+			Order("comm_name asc, start_time asc").
+			Find(&epgAll)
+		for _, epg := range epgAll {
+			epgByComm[epg.CommName] = append(epgByComm[epg.CommName], epg)
+		}
+	}
 	for _, info := range newChanInfo {
 		// 不展示
 		if !info.IsShow {
@@ -239,12 +266,7 @@ func GenerateXmlTv(daysAgo int) ([]byte, error) {
 			continue
 		}
 
-		var epgData []model.EPGDetails
-		global.DB.Where("comm_name = ?", info.CommName).
-			Where("start_time >= ?", epgHistoryBoundary(time.Now(), daysAgo)).
-			Order("start_time asc").
-			Find(&epgData)
-
+		epgData := epgByComm[info.CommName]
 		for _, epg := range epgData {
 			startTime := carbon.CreateFromTimestampMilli(epg.StartTime).Layout(timeFormat)
 			endTime := carbon.CreateFromTimestampMilli(epg.EndTime).Layout(timeFormat)

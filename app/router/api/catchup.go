@@ -2,15 +2,14 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"os"
 	"regexp"
@@ -32,7 +31,6 @@ const (
 	catchupSegmentRetries = 3
 	catchupRetryDelay     = 250 * time.Millisecond
 	catchupUserAgent      = "IPTVSpiderCatchup/1.0"
-	tiviMateSourceURL     = "http://192.168.100.51:34400/m3u/xteve.m3u"
 )
 
 var tvgIDPattern = regexp.MustCompile(`tvg-id="([^"]+)"`)
@@ -110,8 +108,11 @@ func applyReferenceMapping(line string, mappings map[string]referenceMapping, lo
 	}
 	if tvgLogoPattern.MatchString(line) {
 		line = tvgLogoPattern.ReplaceAllString(line, `tvg-logo="`+logoURL+`"`)
-	} else {
-		line = strings.Replace(line, "#EXTINF:", "#EXTINF:", 1)
+	} else if logoURL != "" {
+		// #EXTINF 行缺 tvg-logo 时在频道名逗号前插入属性（旧实现 Replace 相同串=no-op）
+		if comma := strings.LastIndex(line, ","); comma >= 0 {
+			line = line[:comma] + ` tvg-logo="` + logoURL + `"` + line[comma:]
+		}
 	}
 	if groupTitlePattern.MatchString(line) {
 		line = groupTitlePattern.ReplaceAllString(line, `group-title="`+mapping.group+`"`)
@@ -137,21 +138,11 @@ func logoBaseURL(ctx iris.Context) string {
 	return scheme + "://" + host + "/iptvlogos/"
 }
 
-type tvodCacheEntry struct {
-	playURL   string
-	expiresAt time.Time
-}
-
 type tvodPlaySource struct {
 	playlistURL string
 	cookie      *http.Cookie
 	referer     string
 }
-
-var tvodCache = struct {
-	sync.RWMutex
-	entries map[string]tvodCacheEntry
-}{entries: make(map[string]tvodCacheEntry)}
 
 // Keep redirects visible: the provider uses a 302 to signal an expired IPTV
 // session, and following it would turn this POST into an unrelated GET.
@@ -220,25 +211,8 @@ type hlsRelayError struct {
 func (e *hlsRelayError) Error() string { return e.err.Error() }
 func (e *hlsRelayError) Unwrap() error { return e.err }
 
-type rtspResponse struct {
-	status  int
-	headers textproto.MIMEHeader
-	body    []byte
-}
-
-type rtspClient struct {
-	conn    net.Conn
-	read    *bufio.Reader
-	cseq    int
-	session string
-}
-
 func GenerateCatchupM3u(ctx iris.Context) {
-	generateCatchupM3uWithDefaults(ctx, "", catchupMaxDays)
-}
-
-func GenerateTiviMateM3u(ctx iris.Context) {
-	generateCatchupM3uWithDefaults(ctx, tiviMateSourceURL, catchupMaxDays)
+	generateCatchupM3uWithDefaults(ctx, configuredCatchupSource(), configuredCatchupDays())
 }
 
 func generateCatchupM3uWithDefaults(ctx iris.Context, defaultSource string, defaultDays int) {
@@ -253,15 +227,24 @@ func generateCatchupM3uWithDefaults(ctx iris.Context, defaultSource string, defa
 		stopRequest(ctx, iris.StatusInternalServerError, err)
 		return
 	}
+	var channels []model.Channel
+	if err := global.DB.Find(&channels).Error; err != nil {
+		stopRequest(ctx, iris.StatusInternalServerError, err)
+		return
+	}
+	channelByMix := make(map[string]model.Channel, len(channels))
+	for _, channel := range channels {
+		if channel.TimeShift == "1" && channel.TimeShiftURL != "" {
+			channelByMix[channel.UserChannelID] = channel
+		}
+	}
 	enabled := make(map[string]bool)
 	channelsByName := make(map[string]string)
 	for _, info := range model.RemoveDuplicateChannelInfo(channelInfos) {
 		if !info.IsShow {
 			continue
 		}
-		var channel model.Channel
-		result := global.DB.Where("user_channel_id = ? AND time_shift = ? AND time_shift_url <> ?", info.MixNo, "1", "").Order("updated_at DESC").First(&channel)
-		if result.Error != nil {
+		if _, ok := channelByMix[info.MixNo]; !ok {
 			continue
 		}
 		enabled[info.MixNo] = true
@@ -411,8 +394,11 @@ func streamCatchup(ctx iris.Context) {
 		ctx.ContentType("video/mp2t")
 		ctx.Header("Cache-Control", "no-store")
 		ctx.Header("X-Accel-Buffering", "no")
+		// 总时长兜底：回看窗口最长 8h，加 30 分钟余量后强制结束，防上游不返回 ENDLIST 时无限中继
+		relayCtx, relayCancel := context.WithTimeout(ctx.Request().Context(), catchupMaxDuration+30*time.Minute)
+		defer relayCancel()
 		for attempt := 0; attempt < 3; attempt++ {
-			written, relayErr := relayHLSWithSource(ctx.Request().Context(), playSource, ctx.ResponseWriter())
+			written, relayErr := relayHLSWithSource(relayCtx, playSource, ctx.ResponseWriter())
 			if relayErr == nil || ctx.Request().Context().Err() != nil {
 				return
 			}
@@ -434,7 +420,50 @@ func streamCatchup(ctx iris.Context) {
 }
 
 func isPrivateClient(ip net.IP) bool {
-	return ip != nil && (ip.IsPrivate() || ip.IsLoopback())
+	if ip == nil {
+		return false
+	}
+	if ip.IsPrivate() || ip.IsLoopback() {
+		return true
+	}
+	// relay_clients 白名单：可配置为 IP 或 CIDR，命中即按内网客户端走服务端中继
+	if global.CONFIG != nil {
+		for _, entry := range global.CONFIG.Catchup.RelayClients {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if parsed := net.ParseIP(entry); parsed != nil && parsed.Equal(ip) {
+				return true
+			}
+			if _, network, err := net.ParseCIDR(entry); err == nil && network.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// 回看/直连列表默认参数：优先取 config.yaml 的 catchup 段，缺省沿用原有硬编码
+func configuredCatchupSource() string {
+	if global.CONFIG != nil && strings.TrimSpace(global.CONFIG.Catchup.SourceM3u) != "" {
+		return strings.TrimSpace(global.CONFIG.Catchup.SourceM3u)
+	}
+	return ""
+}
+
+func configuredUdpxy() string {
+	if global.CONFIG != nil && strings.TrimSpace(global.CONFIG.Catchup.Udpxy) != "" {
+		return strings.TrimSpace(global.CONFIG.Catchup.Udpxy)
+	}
+	return "192.168.100.51:4022"
+}
+
+func configuredCatchupDays() int {
+	if global.CONFIG != nil && global.CONFIG.Catchup.Days > 0 && global.CONFIG.Catchup.Days <= catchupMaxDays {
+		return global.CONFIG.Catchup.Days
+	}
+	return catchupMaxDays
 }
 
 func retryableRelayError(err error) bool {
@@ -478,16 +507,35 @@ func relayHLSWithSource(ctx context.Context, source tvodPlaySource, writer io.Wr
 		if err != nil {
 			return written, err
 		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 32<<20))
-		response.Body.Close()
-		if readErr != nil {
-			return written, readErr
-		}
 		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
 			if response.StatusCode == http.StatusRequestedRangeNotSatisfiable && written > 0 {
 				return written, nil
 			}
 			return written, &hlsRelayError{status: response.StatusCode, err: fmt.Errorf("HLS request returned %s", response.Status)}
+		}
+		reader := bufio.NewReader(response.Body)
+		probe, _ := reader.Peek(16)
+		trimmedProbe := bytes.TrimLeft(probe, " \t\r\n")
+		if len(trimmedProbe) == 0 || !bytes.HasPrefix(trimmedProbe, []byte("#EXT")) {
+			// 上游直接回媒体流（如整段 .ts）而非 HLS 播放列表：原样透传
+			n, copyErr := io.Copy(writer, reader)
+			written += n
+			if flusher, ok := writer.(interface{ Flush() }); ok {
+				flusher.Flush()
+			}
+			if copyErr != nil {
+				return written, copyErr
+			}
+			if n == 0 {
+				return written, errors.New("upstream returned empty response")
+			}
+			return written, nil
+		}
+		body, readErr := io.ReadAll(io.LimitReader(reader, 32<<20))
+		response.Body.Close()
+		if readErr != nil {
+			return written, readErr
 		}
 		lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
 		base, _ := url.Parse(current)
@@ -519,6 +567,10 @@ func relayHLSWithSource(ctx context.Context, source tvodPlaySource, writer io.Wr
 			return written, errors.New("HLS playlist has no media segments")
 		}
 		for _, segment := range segments {
+			// 长时间中继时 seen 无界增长会吃内存：到上限就整表重置（最多重发最近一屏段）
+			if len(seen) >= 4096 {
+				seen = make(map[string]bool)
+			}
 			if seen[segment] {
 				continue
 			}
@@ -804,231 +856,4 @@ func validateCatchupStart(start time.Time, now time.Time) error {
 		return errors.New("start is in the future")
 	}
 	return nil
-}
-
-func openCatchupSession(ctx context.Context, source string, start time.Time, duration time.Duration) (*rtspClient, error) {
-	target, err := resolveRTSP(ctx, source, start, duration)
-	if err != nil {
-		return nil, err
-	}
-	client, err := dialRTSP(ctx, target)
-	if err != nil {
-		return nil, err
-	}
-	setup, err := client.request("SETUP", target, map[string]string{
-		"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1",
-	})
-	if err != nil {
-		client.close()
-		return nil, fmt.Errorf("RTSP SETUP failed: %w", err)
-	}
-	if setup.status != 200 {
-		client.close()
-		return nil, fmt.Errorf("RTSP SETUP returned status %d", setup.status)
-	}
-	session := strings.Split(setup.headers.Get("Session"), ";")[0]
-	if session == "" {
-		client.close()
-		return nil, errors.New("RTSP SETUP did not return a session")
-	}
-	client.session = session
-	end := start.Add(duration)
-	play, err := client.request("PLAY", target, map[string]string{
-		"Session": session,
-		"Range":   "clock=" + start.Format("20060102T150405Z") + "-" + end.Format("20060102T150405Z"),
-	})
-	if err != nil {
-		client.close()
-		return nil, fmt.Errorf("RTSP PLAY failed: %w", err)
-	}
-	if play.status != 200 {
-		client.close()
-		return nil, fmt.Errorf("RTSP PLAY returned status %d", play.status)
-	}
-	return client, nil
-}
-
-func resolveRTSP(ctx context.Context, source string, start time.Time, duration time.Duration) (string, error) {
-	target, err := setTimeShiftDuration(source, start, duration)
-	if err != nil {
-		return "", err
-	}
-	for redirects := 0; redirects < 8; redirects++ {
-		client, err := dialRTSP(ctx, target)
-		if err != nil {
-			return "", err
-		}
-		response, err := client.request("DESCRIBE", target, map[string]string{"Accept": "application/sdp"})
-		client.close()
-		if err != nil {
-			return "", err
-		}
-		if response.status == 200 {
-			return target, nil
-		}
-		if response.status != 301 && response.status != 302 && response.status != 307 && response.status != 308 {
-			return "", fmt.Errorf("RTSP DESCRIBE returned status %d", response.status)
-		}
-		location := response.headers.Get("Location")
-		if location == "" {
-			return "", errors.New("RTSP redirect did not include Location")
-		}
-		target, err = setTimeShiftDuration(location, start, duration)
-		if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("too many RTSP redirects")
-}
-
-func setTimeShiftDuration(target string, start time.Time, duration time.Duration) (string, error) {
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return "", fmt.Errorf("parse RTSP redirect: %w", err)
-	}
-	query := parsed.Query()
-	end := start.Add(duration)
-	query.Set("DURATION", start.Format("20060102T150405Z")+"-"+end.Format("20060102T150405Z"))
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
-}
-
-func dialRTSP(ctx context.Context, target string) (*rtspClient, error) {
-	parsed, err := url.Parse(target)
-	if err != nil || parsed.Scheme != "rtsp" || parsed.Hostname() == "" {
-		return nil, errors.New("invalid RTSP URL")
-	}
-	port := parsed.Port()
-	if port == "" {
-		port = "554"
-	}
-	dialer := net.Dialer{Timeout: 8 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(parsed.Hostname(), port))
-	if err != nil {
-		return nil, err
-	}
-	return &rtspClient{conn: conn, read: bufio.NewReader(conn)}, nil
-}
-
-func (client *rtspClient) request(method, target string, headers map[string]string) (*rtspResponse, error) {
-	client.cseq++
-	_ = client.conn.SetDeadline(time.Now().Add(12 * time.Second))
-	if _, err := fmt.Fprintf(client.conn, "%s %s RTSP/1.0\r\nCSeq: %d\r\nUser-Agent: %s\r\n", method, target, client.cseq, catchupUserAgent); err != nil {
-		return nil, err
-	}
-	for key, value := range headers {
-		if _, err := fmt.Fprintf(client.conn, "%s: %s\r\n", key, value); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := io.WriteString(client.conn, "\r\n"); err != nil {
-		return nil, err
-	}
-
-	statusLine, err := client.read.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	parts := strings.Fields(statusLine)
-	if len(parts) < 2 {
-		return nil, errors.New("invalid RTSP status line")
-	}
-	status, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	mimeHeaders, err := textproto.NewReader(client.read).ReadMIMEHeader()
-	if err != nil {
-		return nil, err
-	}
-	response := &rtspResponse{status: status, headers: mimeHeaders}
-	if length, _ := strconv.Atoi(mimeHeaders.Get("Content-Length")); length > 0 {
-		response.body = make([]byte, length)
-		if _, err := io.ReadFull(client.read, response.body); err != nil {
-			return nil, err
-		}
-	}
-	_ = client.conn.SetDeadline(time.Time{})
-	return response, nil
-}
-
-func (client *rtspClient) stream(ctx context.Context, writer io.Writer) error {
-	flusher, _ := writer.(interface{ Flush() })
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		_ = client.conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-		marker, err := client.read.ReadByte()
-		if err != nil {
-			return err
-		}
-		if marker != '$' {
-			if _, err := client.read.ReadString('\n'); err != nil {
-				return err
-			}
-			continue
-		}
-		channel, err := client.read.ReadByte()
-		if err != nil {
-			return err
-		}
-		lengthBytes := make([]byte, 2)
-		if _, err := io.ReadFull(client.read, lengthBytes); err != nil {
-			return err
-		}
-		packet := make([]byte, int(binary.BigEndian.Uint16(lengthBytes)))
-		if _, err := io.ReadFull(client.read, packet); err != nil {
-			return err
-		}
-		if channel%2 != 0 {
-			continue
-		}
-		payload, err := rtpPayload(packet)
-		if err != nil {
-			continue
-		}
-		if _, err := writer.Write(payload); err != nil {
-			return err
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-}
-
-func rtpPayload(packet []byte) ([]byte, error) {
-	if len(packet) < 12 || packet[0]>>6 != 2 {
-		return nil, errors.New("invalid RTP packet")
-	}
-	offset := 12 + int(packet[0]&0x0f)*4
-	if len(packet) < offset {
-		return nil, errors.New("short RTP CSRC header")
-	}
-	if packet[0]&0x10 != 0 {
-		if len(packet) < offset+4 {
-			return nil, errors.New("short RTP extension")
-		}
-		extensionLength := int(binary.BigEndian.Uint16(packet[offset+2:offset+4])) * 4
-		offset += 4 + extensionLength
-	}
-	end := len(packet)
-	if packet[0]&0x20 != 0 {
-		padding := int(packet[len(packet)-1])
-		end -= padding
-	}
-	if offset >= end {
-		return nil, errors.New("empty RTP payload")
-	}
-	return packet[offset:end], nil
-}
-
-func (client *rtspClient) close() {
-	if client == nil || client.conn == nil {
-		return
-	}
-	if client.session != "" {
-		_, _ = client.request("TEARDOWN", "*", map[string]string{"Session": client.session})
-	}
-	_ = client.conn.Close()
 }

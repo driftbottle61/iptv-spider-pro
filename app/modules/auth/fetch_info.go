@@ -184,6 +184,10 @@ func (c *Client) FetchChannelList() {
 		LastFetchTime time.Time `gorm:"comment:节目单最后更新时间" json:"-"`
 	*/
 	// 数据入库
+	mixNos := make([]string, 0, len(respJson.Data))
+	for _, ci := range respJson.Data {
+		mixNos = append(mixNos, ci.MixNo)
+	}
 	global.DB.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "mix_no"}},
 		DoUpdates: clause.AssignmentColumns([]string{
@@ -197,6 +201,12 @@ func (c *Client) FetchChannelList() {
 			"comm_name",
 		}),
 	}).Create(&respJson.Data)
+	// 频道重新出现在列表里时，把此前因 >48h 未更新被软删的行恢复（upsert 不会自动清 deleted_at）
+	if len(mixNos) > 0 {
+		global.DB.Unscoped().Model(&model.ChannelInfo{}).
+			Where("mix_no IN ?", mixNos).
+			Update("deleted_at", nil)
+	}
 	global.LOG.Info("频道信息列表更新完成")
 }
 
@@ -243,7 +253,6 @@ func (c *Client) FetchChannelProg() {
 			// 单频道数据异常（会话失效返回 HTML、上游偶发坏包等）只跳过该频道，
 			// 不要中断整轮，否则后续频道全部漏更（2026-09-08 08:00 cron 整轮失败即此 bug）
 			global.LOG.Error("FetchChannelProg Unmarshal Err: "+err.Error(),
-				zap.Any("SessionID", c.JSESSIONID),
 				zap.Any("Params", params),
 				zap.Any("resp", respJson))
 			time.Sleep(time.Millisecond * 500)
@@ -251,7 +260,6 @@ func (c *Client) FetchChannelProg() {
 		}
 		if respJson.Data == nil || len(respJson.Data) == 0 {
 			global.LOG.Warn("FetchChannelProg Err: No Data!",
-				zap.Any("SessionID", c.JSESSIONID),
 				zap.Any("Params", params),
 				zap.Any("resp", respJson))
 			continue

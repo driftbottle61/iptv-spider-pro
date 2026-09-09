@@ -3,6 +3,8 @@ system:
   addr: '0.0.0.0:8888'
   db-type: 'mysql'
   oss-type: ''
+  # 管理接口令牌：非空时 /api/run 等必须带 ?token= 匹配；留空=仅内网/回环可调（勿公网暴露 8888）
+  api-token: ''
 
 stb:
   uid: ''

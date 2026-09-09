@@ -3,6 +3,8 @@ package model
 import "gorm.io/gorm"
 
 type EPGDetails struct {
+	// 外层 string ID 有意遮蔽 gorm.Model.ID：节目单主键是平台下发的 string playbillID。
+	// gorm.Model 仅用于 CreatedAt/UpdatedAt/DeletedAt（勿改为内嵌无 ID 结构，会触发建表/迁移变化）
 	gorm.Model        `json:"-"`
 	CommName          string `gorm:"index;comment:节目通用名称" json:"-"`
 	InterRecordStatus string `gorm:"comment:未知" json:"interRecordStatus"`

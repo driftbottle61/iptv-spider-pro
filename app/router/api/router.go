@@ -1,11 +1,15 @@
 package api
 
 import (
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"github.com/kataras/iris/v12"
 	"iptv-spider-sh/global"
 	"iptv-spider-sh/modules/auth"
 	"iptv-spider-sh/utils"
+	"net"
+	"strings"
 	"time"
 )
 
@@ -13,6 +17,9 @@ func InitApiRouters(rg iris.Party) {
 	rg.Get("/schedule", schedule)
 
 	rg.Get("/run", func(ctx iris.Context) {
+		if !apiControlAllowed(ctx) {
+			return
+		}
 		taskName := ctx.FormValue("task")
 
 		go func() {
@@ -69,8 +76,8 @@ func GenerateDirectIPTVSharpM3u(ctx iris.Context) {
 }
 
 func generateDirectClientM3u(ctx iris.Context, iptvSharp bool) {
-	udpxy := ctx.URLParamDefault("udpxy", "192.168.100.51:4022")
-	days := 7
+	udpxy := ctx.URLParamDefault("udpxy", configuredUdpxy())
+	days := configuredCatchupDays()
 	scheme := ctx.GetHeader("X-Forwarded-Proto")
 	if scheme == "" {
 		scheme = "http"
@@ -160,4 +167,29 @@ func generateTsM3u8(ctx iris.Context) {
 	})
 	ctx.Header("Content-Disposition", "attachment; filename=iptv-ts.m3u")
 	ctx.Binary(resp.([]byte))
+}
+
+// apiControlAllowed 管理接口访问控制：配置了 system.api-token 后 /api/run 一律要求
+// 携带匹配的 ?token=；未配置时仅放行内网/回环客户端（管理接口不应暴露公网）。
+func apiControlAllowed(ctx iris.Context) bool {
+	token := ""
+	if global.CONFIG != nil {
+		token = global.CONFIG.System.ApiToken
+	}
+	if token != "" {
+		if subtle.ConstantTimeCompare([]byte(ctx.FormValue("token")), []byte(token)) == 1 {
+			return true
+		}
+		stopRequest(ctx, iris.StatusUnauthorized, errors.New("invalid or missing API token"))
+		return false
+	}
+	remote := ctx.RemoteAddr()
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		remote = host
+	}
+	if ip := net.ParseIP(strings.Trim(remote, "[]")); ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
+		return true
+	}
+	stopRequest(ctx, iris.StatusForbidden, errors.New("management API only available on private network"))
+	return false
 }
