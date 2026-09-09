@@ -72,7 +72,25 @@ func (c *HttpClient) SetCookies(cookies ...*http.Cookie) {
 	if len(cookies) <= 0 {
 		return
 	}
-	c.client.SetCookies(cookies)
+	// resty 的 Client.SetCookies 是纯追加语义：middleware 会把 c.Cookies 全部 AddCookie
+	// 到每个请求的 Cookie 头，不按域名/名称去重。认证每次刷新会话都调 SetCookies 追加
+	// 同名 JSESSIONID，跨 EPG 节点漂移（host 变化）后旧值仍不清，单头会累积几十上百个
+	// 重复 Cookie、超 8KB 被上游门户以 400 拒收（2026-09-09 .90 回看 500 事故根因）。
+	// 本客户端手工管理认证 Cookie：同名旧值全部清掉、只保留最新一次设置的即可。
+	kept := c.client.Cookies[:0]
+	for _, old := range c.client.Cookies {
+		duplicate := false
+		for _, nw := range cookies {
+			if old != nil && nw != nil && old.Name == nw.Name {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			kept = append(kept, old)
+		}
+	}
+	c.client.Cookies = append(kept, cookies...)
 }
 
 func (c *HttpClient) Cookies() []*http.Cookie {

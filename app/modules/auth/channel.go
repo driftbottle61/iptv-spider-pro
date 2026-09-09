@@ -12,6 +12,10 @@ func GetChannelFormString(c string) model.Channel {
 	sp := strings.Split(c, ",")
 	for _, s := range sp {
 		c := strings.SplitN(s, "=", 2)
+		if len(c) < 2 {
+			// 段内不含 "="（脏数据/末尾空段），忽略，避免 c[1] 越界 panic
+			continue
+		}
 		//key := strings.ToLower(c[0])
 		key := c[0]
 		data[key] = strings.Trim(c[1], `"`)

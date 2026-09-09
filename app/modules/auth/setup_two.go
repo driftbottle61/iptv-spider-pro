@@ -51,9 +51,20 @@ func (c *Client) epgLoadBalance(doc *goquery.Document) *goquery.Document {
 			uri = s[index+1 : last]
 		}
 	}
+	if uri == "" {
+		// uri 为空时 url.Parse 返回的 err 是 nil，直接走 err.Error() 会 nil 指针 panic
+		// （2026-09-09 .90 回看 500 事故根因之一：Cookie 头超 8KB 被门户 400 拒收后
+		// 页面无 top.document.location，此处 panic → iris recover → 500）
+		global.LOG.Error("EPG负载均衡页面未返回 top.document.location 跳转地址")
+		return nil
+	}
 	u, err := url.Parse(uri)
-	if uri == "" || err != nil || u.Scheme == "" || u.Host == "" {
-		global.LOG.Error(err.Error())
+	if err != nil {
+		global.LOG.Error(fmt.Sprintf("解析EPG负载均衡跳转地址失败: %s, err=%v", uri, err))
+		return nil
+	}
+	if u.Scheme == "" || u.Host == "" {
+		global.LOG.Error(fmt.Sprintf("EPG负载均衡跳转地址不完整: %s", uri))
 		return nil
 	}
 	c.EPGLoginHost = u.Host

@@ -240,11 +240,14 @@ func (c *Client) FetchChannelProg() {
 		var respJson model.JsonResponse[model.EPGDetails]
 		err := json.Unmarshal(resp.GetRespBytes(), &respJson)
 		if err != nil {
+			// 单频道数据异常（会话失效返回 HTML、上游偶发坏包等）只跳过该频道，
+			// 不要中断整轮，否则后续频道全部漏更（2026-09-08 08:00 cron 整轮失败即此 bug）
 			global.LOG.Error("FetchChannelProg Unmarshal Err: "+err.Error(),
 				zap.Any("SessionID", c.JSESSIONID),
 				zap.Any("Params", params),
 				zap.Any("resp", respJson))
-			return
+			time.Sleep(time.Millisecond * 500)
+			continue
 		}
 		if respJson.Data == nil || len(respJson.Data) == 0 {
 			global.LOG.Warn("FetchChannelProg Err: No Data!",
