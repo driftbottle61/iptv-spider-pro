@@ -50,3 +50,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/driftbottle61/iptv-spider-pr
 - 卸载：CT 内 `iptv-spider-uninstall`。
 
 应用运行细节、RouterOS 抓包说明、配置项见 `app/README_CN.md`。
+
+## 参考文档与致谢
+
+- `docs/routeros-iptv-guide-jeffz.md`：RouterOS + 猫棒打通上海电信 IPTV 二层
+  链路指引。整理自 jeffz 的博客文章《上海电信 IPTV 折腾记录 ROS+猫棒》
+  （<https://jeffz.page/posts/4277824729/>）。本项目的 RouterOS 猫棒 IPTV
+  链路即参考 jeffz 的文章打通，在此致谢。
