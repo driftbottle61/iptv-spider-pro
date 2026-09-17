@@ -151,12 +151,12 @@ func (c *Client) FetchChannelList() {
 	filtered := respJson.Data[:0]
 	for _, chanInfo := range respJson.Data {
 		channelName := strings.TrimSpace(strings.TrimSuffix(strings.ToUpper(chanInfo.Name), "HD"))
-		if channelName == "体育频道" || channelName == "高清导视" {
-			if channelName == "体育频道" {
-				global.LOG.Info("跳过重复体育频道，保留五星体育HD")
-			} else {
-				global.LOG.Info("跳过高清导视频道")
-			}
+		if model.IsHiddenChannelName(chanInfo.Name) {
+			global.LOG.Info("跳过需隐藏的频道", zap.String("ChannelName", chanInfo.Name))
+			continue
+		}
+		if channelName == "体育频道" {
+			global.LOG.Info("跳过重复体育频道，保留五星体育HD")
 			continue
 		}
 		filtered = append(filtered, chanInfo)
@@ -232,7 +232,7 @@ func (c *Client) FetchChannelProg() {
 	for _, ch := range channelInfoList {
 		// 4 个小时之内更新过，跳过此次更新
 		lft := carbon.FromStdTime(ch.LastFetchTime)
-		if lft.Gt(now.SubHours(4)) || !ch.IsPullEPG || !ch.IsShow {
+		if lft.Gt(now.SubHours(4)) || !ch.IsPullEPG || !ch.IsShow || ch.IsHidden() {
 			continue
 		}
 		endTime := now.AddDays(3).TimestampMilli()

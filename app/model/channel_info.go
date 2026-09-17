@@ -89,10 +89,37 @@ func (h *ChannelInfo) BeforeUpdate(tx *gorm.DB) (err error) {
 	return
 }
 
-// RemoveDuplicateChannelInfo  ChannelInfo 数组去重
+// hiddenChannelKeywords 需要在所有输出（m3u / EPG）里隐藏的频道关键字。
+// 导视类频道上游实际下发名是「高清导视频道」（不是「高清导视」），且会反复下发，
+// 因此在统一收口处按关键字判断，避免依赖上游名称的精确写法。
+var hiddenChannelKeywords = []string{"高清导视"}
+
+// IsHiddenChannelName 频道名是否属于需要在输出中隐藏的频道。
+func IsHiddenChannelName(name string) bool {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	for _, kw := range hiddenChannelKeywords {
+		if strings.Contains(n, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsHidden 频道（名称或通用名）是否需要在输出中隐藏。
+func (h *ChannelInfo) IsHidden() bool {
+	return IsHiddenChannelName(h.Name) || IsHiddenChannelName(h.CommName)
+}
+
+// RemoveDuplicateChannelInfo  ChannelInfo 数组去重（同时剔除需隐藏的频道）
 func RemoveDuplicateChannelInfo(in []ChannelInfo) []ChannelInfo {
 	newMap := make(map[string]ChannelInfo, len(in))
 	for _, child := range in {
+		if child.IsHidden() {
+			continue
+		}
 		if ch, ok := newMap[child.CommName]; ok {
 			// 判断能否替换
 			newMap[child.CommName] = check(ch, child)
