@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.2.1"
 REPOSITORY="driftbottle61/iptv-spider-pro"
 ARCHIVE="iptv-spider-pro-app-${VERSION}-linux-amd64.tar.gz"
 BASE_URL="https://github.com/${REPOSITORY}/releases/download/v${VERSION}"
@@ -23,7 +23,7 @@ else
 fi
 
 tar -xzf "$archive_path" -C "$work_dir"
-root="$work_dir/iptv-spider-installer"
+root="$work_dir/app"
 [[ -x "$root/pve-iptv-prep.sh" ]] || { echo '安装包缺少 pve-iptv-prep.sh。'; exit 1; }
 [[ -x "$root/bin/stb-probe-linux-amd64" ]] || { echo '安装包缺少 stb-probe。'; exit 1; }
 export IPTV_STB_PROBE="$root/bin/stb-probe-linux-amd64"

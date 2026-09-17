@@ -22,7 +22,7 @@ RouterOS SNAT/静态路由（RouterOS 只做二层桥接 + IGMP 组播代理）�
   GitHub 兜底下载只指向本仓库 Release（`iptv-spider-pro-app-<ver>-linux-amd64.tar.gz`）。
 - `app/`：应用本体（iptv-spider 程序源码 + `bin/` 预编译 + assets/logos +
   `status.sh`/`manage.sh`/`uninstall.sh`/覆盖升级 `install.sh` 等）。
-- 版本：仓库 tag（如 `v1.0.0`）= 应用版本；`app/VERSION` 与 Release asset 同步。
+- 版本：仓库 tag（如 `v1.2.1`）= 应用版本；`app/VERSION` 与 Release asset 同步。
 
 ## 快速开始（全新安装）
 
@@ -31,7 +31,7 @@ RouterOS SNAT/静态路由（RouterOS 只做二层桥接 + IGMP 组播代理）�
 `STB_MODE=capture` 需实体机顶盒可断电上电。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/driftbottle61/iptv-spider-pro/v1.0.0/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/driftbottle61/iptv-spider-pro/v1.2.1/install.sh)
 ```
 
 - 无参数=交互向导；按提示选择机顶盒参数获取方式（RouterOS 抓包 / 手工）。
