@@ -1,3 +1,11 @@
+> ⚠️ **本仓库已弃用（不再维护）**：单仓库自包含版本已迁移到
+> [`driftbottle61/iptv-spider-pve`](https://github.com/driftbottle61/iptv-spider-pve)
+> —— 安装件与应用本体在同一仓库、同一次 Release 里，并新增了应用内「高清导视频道」过滤。
+> 请改用：
+> `bash <(curl -fsSL https://raw.githubusercontent.com/driftbottle61/iptv-spider-pve/v0.3.0/install.sh)`
+>
+> 本仓库仅作历史归档保留。
+
 # iptv-spider-pro
 
 上海电信 IPTV Spider 的**单仓库自包含**版本：PVE/CT 编排脚本与应用本体打包在
